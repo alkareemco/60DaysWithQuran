@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+<title>Quran ½ Juz Tracker</title>
+
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0f172a">
+
+<style>
+body{
+    font-family: Arial, sans-serif;
+    background:#0f172a;
+    color:white;
+    margin:0;
+    padding:20px;
+}
+h1{text-align:center;margin-bottom:10px;}
+
+.control-box{
+    background:#1e293b;
+    padding:15px;
+    border-radius:12px;
+    margin-bottom:20px;
+}
+
+.card{
+    background:#1e293b;
+    padding:15px;
+    margin-bottom:10px;
+    border-radius:12px;
+}
+
+.title{font-weight:bold;}
+.small{font-size:13px;opacity:0.85;}
+
+button{
+    margin-top:8px;
+    padding:6px 12px;
+    border:none;
+    border-radius:8px;
+    cursor:pointer;
+    background:#22c55e;
+    color:white;
+}
+
+.done{
+    text-decoration:line-through;
+    opacity:0.6;
+}
+
+.progress{
+    margin-bottom:20px;
+    background:#334155;
+    border-radius:10px;
+    overflow:hidden;
+}
+
+.bar{
+    height:10px;
+    background:#22c55e;
+    width:0%;
+}
+</style>
+</head>
+
+<body>
+
+<h1>½ Juz Quran Tracker</h1>
+
+<div class="control-box">
+    <label>Tanggal Mulai:</label>
+    <input type="date" id="startDate">
+
+    <label style="margin-left:10px;">½ Juz per Hari:</label>
+    <input type="number" id="perDay" value="1" min="1" style="width:60px;">
+
+    <button onclick="generateSchedule()">Generate</button>
+
+    <div id="result" style="margin-top:10px;font-weight:bold;"></div>
+</div>
+
+<div class="progress">
+    <div class="bar" id="bar"></div>
+</div>
+
+<div id="list"></div>
+
+<script>
+
+const data = [
+{j:1,r:"1-74",d:"Al-Fatihah 1",s:"Al-Baqarah 74"},
+{j:1,r:"75-148",d:"Al-Baqarah 75",s:"Al-Baqarah 141"},
+{j:2,r:"1-55",d:"Al-Baqarah 142",s:"Al-Baqarah 196"},
+{j:2,r:"56-111",d:"Al-Baqarah 197",s:"Al-Baqarah 252"},
+{j:3,r:"1-63",d:"Al-Baqarah 253",s:"Ali 'Imran 63"},
+{j:3,r:"64-126",d:"Ali 'Imran 64",s:"Ali 'Imran 92"},
+{j:4,r:"1-65",d:"Ali 'Imran 93",s:"An-Nisa 23"},
+{j:4,r:"66-131",d:"An-Nisa 24",s:"An-Nisa 176"},
+{j:5,r:"1-62",d:"An-Nisa 24",s:"An-Nisa 85"},
+{j:5,r:"63-124",d:"An-Nisa 86",s:"An-Nisa 147"},
+{j:6,r:"1-55",d:"An-Nisa 148",s:"Al-Ma'idah 26"},
+{j:6,r:"56-110",d:"Al-Ma'idah 27",s:"Al-Ma'idah 81"},
+{j:7,r:"1-74",d:"Al-Ma'idah 82",s:"Al-An'am 36"},
+{j:7,r:"75-149",d:"Al-An'am 37",s:"Al-An'am 110"},
+{j:8,r:"1-71",d:"Al-An'am 111",s:"Al-A'raf 87"},
+{j:8,r:"72-142",d:"Al-A'raf 88",s:"Al-A'raf 206"},
+{j:9,r:"1-79",d:"Al-A'raf 88",s:"Al-Anfal 40"},
+{j:9,r:"80-159",d:"Al-Anfal 41",s:"Al-Anfal 75"},
+{j:10,r:"1-63",d:"Al-Anfal 41",s:"At-Tawbah 40"},
+{j:10,r:"64-127",d:"At-Tawbah 41",s:"At-Tawbah 92"},
+{j:11,r:"1-75",d:"At-Tawbah 93",s:"Hud 5"},
+{j:11,r:"76-151",d:"Hud 6",s:"Hud 123"},
+{j:12,r:"1-85",d:"Hud 6",s:"Yusuf 52"},
+{j:12,r:"86-170",d:"Yusuf 53",s:"Yusuf 111"},
+{j:13,r:"1-77",d:"Yusuf 53",s:"Ibrahim 52"},
+{j:13,r:"78-154",d:"Al-Hijr 1",s:"An-Nahl 52"},
+{j:14,r:"1-113",d:"Al-Hijr 1",s:"An-Nahl 93"},
+{j:14,r:"114-227",d:"An-Nahl 94",s:"An-Nahl 128"},
+{j:15,r:"1-92",d:"Al-Isra 1",s:"Al-Kahf 74"},
+{j:15,r:"93-185",d:"Al-Kahf 75",s:"Al-Kahf 110"},
+{j:16,r:"1-134",d:"Al-Kahf 75",s:"Ta-Ha 65"},
+{j:16,r:"135-269",d:"Ta-Ha 66",s:"Ta-Ha 135"},
+{j:17,r:"1-95",d:"Al-Anbiya 1",s:"Al-Hajj 39"},
+{j:17,r:"96-190",d:"Al-Hajj 40",s:"Al-Hajj 78"},
+{j:18,r:"1-101",d:"Al-Mu'minun 1",s:"Al-Furqan 20"},
+{j:18,r:"102-202",d:"Al-Furqan 21",s:"Al-Furqan 77"},
+{j:19,r:"1-169",d:"Al-Furqan 21",s:"An-Naml 55"},
+{j:19,r:"170-339",d:"An-Naml 56",s:"An-Naml 93"},
+{j:20,r:"1-85",d:"An-Naml 56",s:"Al-Ankabut 45"},
+{j:20,r:"86-171",d:"Al-Ankabut 46",s:"Al-Ankabut 69"},
+{j:21,r:"1-89",d:"Al-Ankabut 46",s:"Al-Ahzab 30"},
+{j:21,r:"90-178",d:"Al-Ahzab 31",s:"Al-Ahzab 73"},
+{j:22,r:"1-84",d:"Al-Ahzab 31",s:"Ya-Sin 27"},
+{j:22,r:"85-169",d:"Ya-Sin 28",s:"Ya-Sin 83"},
+{j:23,r:"1-178",d:"Ya-Sin 28",s:"Az-Zumar 31"},
+{j:23,r:"179-357",d:"Az-Zumar 32",s:"Az-Zumar 75"},
+{j:24,r:"1-87",d:"Az-Zumar 32",s:"Fussilat 46"},
+{j:24,r:"88-175",d:"Fussilat 47",s:"Fussilat 54"},
+{j:25,r:"1-123",d:"Fussilat 47",s:"Al-Jathiyah 37"},
+{j:25,r:"124-246",d:"Al-Ahqaf 1",s:"Al-Ahqaf 35"},
+{j:26,r:"1-97",d:"Muhammad 1",s:"Adh-Dhariyat 30"},
+{j:26,r:"98-195",d:"Adh-Dhariyat 31",s:"Adh-Dhariyat 60"},
+{j:27,r:"1-199",d:"Adh-Dhariyat 31",s:"Al-Hadid 29"},
+{j:27,r:"200-399",d:"Al-Mujadilah 1",s:"Al-Mujadilah 22"},
+{j:28,r:"1-68",d:"Al-Hashr 1",s:"At-Tahrim 12"},
+{j:28,r:"69-137",d:"Al-Mulk 1",s:"Al-Mulk 30"},
+{j:29,r:"1-215",d:"Al-Qalam 1",s:"Al-Mursalat 50"},
+{j:29,r:"216-431",d:"An-Naba 1",s:"An-Nas 6"},
+{j:30,r:"1-282",d:"An-Naba 1",s:"Al-Infitar 19"},
+{j:30,r:"283-564",d:"Al-Mutaffifin 1",s:"An-Nas 6"}
+];
+
+let progress = JSON.parse(localStorage.getItem("quranProgress")) || {};
+const list = document.getElementById("list");
+const bar = document.getElementById("bar");
+
+function render(){
+    list.innerHTML="";
+    let doneCount=0;
+
+    data.forEach((item,index)=>{
+        const card=document.createElement("div");
+        card.className="card";
+        if(progress[index]){
+            card.classList.add("done");
+            doneCount++;
+        }
+
+        card.innerHTML=`
+            <div class="title">Juz ${item.j} (${item.r})</div>
+            <div class="small">Dari: ${item.d}</div>
+            <div class="small">Sampai: ${item.s}</div>
+            <button onclick="toggle(${index})">
+                ${progress[index] ? "✓ Done" : "Mark Done"}
+            </button>
+        `;
+        list.appendChild(card);
+    });
+
+    bar.style.width = (doneCount/data.length*100) + "%";
+}
+
+function toggle(i){
+    progress[i]=!progress[i];
+    localStorage.setItem("quranProgress",JSON.stringify(progress));
+    render();
+}
+
+render();
+
+// ===== DATA 60 SESI =====
+const data = Array.from({length:60}, (_,i)=>({
+    j: Math.ceil((i+1)/2),
+    r: `Sesi ${i+1}`,
+    d: `½ Juz bagian ${i+1}`,
+    s: `Target penyelesaian`
+}));
+
+// ===== PROGRESS STORAGE =====
+let progress = JSON.parse(localStorage.getItem("quranProgress")) || {};
+const list = document.getElementById("list");
+const bar = document.getElementById("bar");
+
+// ===== RENDER LIST =====
+function render(){
+    list.innerHTML="";
+    let doneCount=0;
+
+    data.forEach((item,index)=>{
+        const card=document.createElement("div");
+        card.className="card";
+
+        if(progress[index]){
+            card.classList.add("done");
+            doneCount++;
+        }
+
+        card.innerHTML=`
+            <div class="title">Juz ${item.j} - ${item.r}</div>
+            <div class="small">${item.d}</div>
+            <button onclick="toggle(${index})">
+                ${progress[index] ? "✓ Selesai" : "Tandai Selesai"}
+            </button>
+        `;
+        list.appendChild(card);
+    });
+
+    bar.style.width = (doneCount/data.length*100) + "%";
+}
+
+// ===== TOGGLE CHECK =====
+function toggle(i){
+    progress[i]=!progress[i];
+    localStorage.setItem("quranProgress",JSON.stringify(progress));
+    render();
+}
+
+// ===== GENERATE TANGGAL KHATAM =====
+function generateSchedule(){
+    const startInput = document.getElementById("startDate").value;
+    const perDay = parseInt(document.getElementById("perDay").value);
+
+    if(!startInput){
+        alert("Pilih tanggal mulai dulu");
+        return;
+    }
+
+    const totalSession = data.length; // 60
+    const totalDays = Math.ceil(totalSession / perDay);
+
+    let startDate = new Date(startInput);
+    let endDate = new Date(startDate);
+    endDate.setDate(startDate.getDate() + totalDays - 1);
+
+    const options = { day: 'numeric', month: 'long', year: 'numeric' };
+
+    document.getElementById("result").innerHTML =
+        `📖 Estimasi khatam:<br>
+         ${startDate.toLocaleDateString('id-ID', options)} 
+         ➜ 
+         ${endDate.toLocaleDateString('id-ID', options)}
+         <br>(${totalDays} hari)`;
+}
+
+render();
+
+// ===== SERVICE WORKER REGISTER =====
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('service-worker.js');
+}
+
+</script>
+
+</body>
+</html>
