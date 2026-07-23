@@ -1,0 +1,366 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare source files
+        run: |
+          mkdir -p app
+          if [ -f "60DaysWithQuran.zip" ]; then
+            echo "📦 Unzipping 60DaysWithQuran.zip into app/..."
+            unzip -o "60DaysWithQuran.zip" -d app
+          elif [ -d "app" ] && [ -f "app/package.json" ]; then
+            echo "📂 Source files already present in app/"
+          elif [ -f "package.json" ]; then
+            echo "📂 Source files in root, copying to app/..."
+            cp -r ./* app/ 2>/dev/null || true
+          fi
+
+          # Flatten nested folder if package.json is inside a subfolder
+          if [ ! -f "app/package.json" ]; then
+            PKG_PATH=$(find app -name "package.json" -not -path "*/node_modules/*" | head -n 1)
+            if [ -n "$PKG_PATH" ]; then
+              SUBDIR=$(dirname "$PKG_PATH")
+              if [ "$SUBDIR" != "app" ]; then
+                echo "📂 Found package.json in $SUBDIR. Flattening contents to app/..."
+                cp -r "$SUBDIR"/* "app/" 2>/dev/null || true
+                cp -r "$SUBDIR"/.* "app/" 2>/dev/null || true
+              fi
+            fi
+          fi
+
+          if [ ! -f "app/package.json" ]; then
+            echo "Creating fallback package.json..."
+            echo '{"name":"app","private":true,"version":"1.0.0","type":"module","scripts":{"build":"vite build --base=./ || react-scripts build || next build || echo Build skipped"}}' > app/package.json
+          fi
+          echo "--- Contents of app/ ---"
+          ls -la app/
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        working-directory: app
+        run: |
+          npm install --legacy-peer-deps || npm install
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const cp = require("child_process");
+            const builtins = new Set(["fs","path","child_process","https","http","os","crypto","util","events","stream","url","assert","buffer","querystring","zlib","tls","net","readline","process"]);
+            let pkg = {};
+            if (fs.existsSync("package.json")) {
+              try { pkg = JSON.parse(fs.readFileSync("package.json", "utf8")); } catch (e) {}
+            }
+            const installed = { ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) };
+            const scannedPkgs = new Set();
+            function scan(dir) {
+              if (!fs.existsSync(dir)) return;
+              const items = fs.readdirSync(dir, { withFileTypes: true });
+              for (const item of items) {
+                if (item.isDirectory()) {
+                  if (!["node_modules", "dist", "build", ".git", "android", "ios", "out", ".next"].includes(item.name)) {
+                    scan(path.join(dir, item.name));
+                  }
+                } else if (item.isFile() && /\.(tsx?|jsx?|vue|svelte)$/i.test(item.name)) {
+                  try {
+                    const content = fs.readFileSync(path.join(dir, item.name), "utf8");
+                    const re = /(?:import|export)\s+[\s\S]*?\s+from\s+["\x27]([^"\x27]+)["\x27]|(?:import|require)\s*\(\s*["\x27]([^"\x27]+)["\x27]\s*\)|import\s+["\x27]([^"\x27]+)["\x27]/g;
+                    let m;
+                    while ((m = re.exec(content)) !== null) {
+                      const imp = m[1] || m[2] || m[3];
+                      if (!imp || imp.startsWith(".") || imp.startsWith("/") || imp.startsWith("node:") || imp.startsWith("http")) continue;
+                      const parts = imp.split("/");
+                      const pkgName = imp.startsWith("@") ? (parts[0] + "/" + (parts[1] || "")) : parts[0];
+                      if (pkgName && !builtins.has(pkgName)) { scannedPkgs.add(pkgName); }
+                    }
+                  } catch (e) {}
+                }
+              }
+            }
+            for (const d of ["src", "components", "app", "lib", "pages"]) scan(d);
+            scan(".");
+            const needed = [];
+            for (const p of scannedPkgs) {
+              if (!installed[p] && !fs.existsSync(path.join("node_modules", p))) {
+                needed.push(p);
+              }
+            }
+            if (!installed["react"] && !fs.existsSync("node_modules/react")) needed.push("react@^18.3.1");
+            if (!installed["react-dom"] && !fs.existsSync("node_modules/react-dom")) needed.push("react-dom@^18.3.1");
+            if (!installed["@vitejs/plugin-react"] && !installed["@vitejs/plugin-react-swc"] && !fs.existsSync("node_modules/@vitejs/plugin-react")) needed.push("@vitejs/plugin-react@^4.3.1");
+            if (!installed["vite"] && !fs.existsSync("node_modules/vite")) needed.push("vite@^5.4.0");
+            const uniqueNeeded = [...new Set(needed)];
+            if (uniqueNeeded.length > 0) {
+              console.log("⚡ Auto-installing missing scanned packages:", uniqueNeeded.join(" "));
+              try { cp.execSync("npm install --save-dev --legacy-peer-deps " + uniqueNeeded.join(" "), { stdio: "inherit" }); } catch (e) { console.warn("⚠️ Auto-install notice:", e.message); }
+            }
+          '
+          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 --save --legacy-peer-deps
+
+      - name: Inject Environment Secrets (.env)
+        working-directory: app
+        run: |
+          touch .env .env.local
+          if [ -n "${{ secrets.GEMINI_API_KEY }}" ]; then
+            echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
+            echo "VITE_GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
+            echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env.local
+            echo "VITE_GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env.local
+          fi
+          if [ -n "${{ secrets.RESEND_API_KEY }}" ]; then
+            echo "RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}" >> .env
+          fi
+
+      - name: Build web app
+        working-directory: app
+        run: |
+          echo "🔨 Starting Web App Compilation..."
+          node -e '
+            const fs = require("fs");
+            if (!fs.existsSync("index.html")) {
+              let entry = "";
+              const candidates = ["src/main.tsx", "src/main.jsx", "src/main.ts", "src/main.js", "src/index.tsx", "src/index.jsx", "src/index.js", "src/App.tsx", "src/App.jsx"];
+              for (const c of candidates) { if (fs.existsSync(c)) { entry = "/" + c; break; } }
+              const scriptTag = entry ? `<script type="module" src="${entry}"></script>` : "";
+              const html = `<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8" />\n  <meta name="viewport" content="width=device-width, initial-scale=1.0" />\n  <title>${"60DaysWithQuran"}</title>\n</head>\n<body>\n  <div id="root"></div>\n  ${scriptTag}\n</body>\n</html>\n`;
+              fs.writeFileSync("index.html", html, "utf8");
+              console.log("⚡ Auto-generated index.html linking to:", entry || "none");
+            }
+            const hasVite = fs.existsSync("vite.config.ts") || fs.existsSync("vite.config.js") || fs.existsSync("vite.config.mjs");
+            if (!hasVite) {
+              const vcfg = `import { defineConfig } from "vite";\nimport react from "@vitejs/plugin-react";\n\nexport default defineConfig({\n  plugins: [react()],\n  base: "./",\n});\n`;
+              fs.writeFileSync("vite.config.ts", vcfg, "utf8");
+              console.log("⚡ Auto-generated vite.config.ts");
+            }
+          '
+
+          if grep -q '"build":' package.json 2>/dev/null; then
+            echo "📦 Running npm run build..."
+            npm run build || npx vite build --base=./ || true
+          elif [ -f "vite.config.ts" ] || [ -f "vite.config.js" ] || grep -q "vite" package.json 2>/dev/null; then
+            echo "⚡ Vite project detected. Building with relative base './'..."
+            npx vite build --base=./ || npm run build || true
+          else
+            echo "Building with npm run build..."
+            npm run build || true
+          fi
+
+          if [ ! -d "dist" ] || [ ! -f "dist/index.html" ]; then
+            if [ -d "build" ] && [ -f "build/index.html" ]; then
+              echo "📂 Found build directory with index.html, copying to dist..."
+              mkdir -p dist && cp -r build/* dist/
+            elif [ -d "out" ] && [ -f "out/index.html" ]; then
+              echo "📂 Found out directory with index.html, copying to dist..."
+              mkdir -p dist && cp -r out/* dist/
+            elif [ -f "dist/public/index.html" ]; then
+              echo "📂 Found dist/public/index.html, copying to dist root..."
+              cp -r dist/public/* dist/
+            fi
+          fi
+
+          if [ ! -f "dist/index.html" ]; then
+            echo "❌ ERROR: dist/index.html was not generated by the build process!"
+            echo "Directory contents:"
+            ls -la
+            exit 1
+          fi
+
+          node -e '
+            const fs = require("fs");
+            if (fs.existsSync("dist/index.html")) {
+              let c = fs.readFileSync("dist/index.html", "utf8");
+              c = c.replace(/href="\/assets/g, "href=\"./assets")
+                   .replace(/src="\/assets/g, "src=\"./assets")
+                   .replace(/href="\/"/g, "href=\"./\"")
+                   .replace(/src="\/"/g, "src=\"./\"");
+              fs.writeFileSync("dist/index.html", c, "utf8");
+              console.log("✓ Updated relative paths in dist/index.html");
+            }
+          '
+
+          echo "--- Contents of dist/ ---"
+          ls -la dist/
+
+      - name: Set up Capacitor for Android
+        working-directory: app
+        run: |
+          node -e '
+            const fs = require("fs");
+            const capCfg = {
+              appId: "com.alkareemco.60aysithuran",
+              appName: "60DaysWithQuran",
+              webDir: "dist",
+              server: { androidScheme: "https" }
+            };
+            fs.writeFileSync("capacitor.config.json", JSON.stringify(capCfg, null, 2), "utf8");
+          '
+
+          npx cap add android || true
+          npx cap sync android
+
+      - name: Apply Custom App Icon
+        working-directory: app
+        run: |
+          ICON_SRC=""
+          for f in icon.png icon.jpg icon.svg app-icon.png public/icon.png public/icon.jpg public/icon.svg public/favicon.ico favicon.ico; do
+            if [ -f "$f" ]; then ICON_SRC="$f"; break; fi
+          done
+          if [ -z "$ICON_SRC" ]; then ICON_SRC=$(find . -maxdepth 3 -name "icon.png" | head -n 1); fi
+          if [ -z "$ICON_SRC" ]; then ICON_SRC=$(find . -maxdepth 3 -name "icon.jpg" | head -n 1); fi
+          if [ -z "$ICON_SRC" ]; then ICON_SRC=$(find . -maxdepth 3 -name "app-icon.png" | head -n 1); fi
+          if [ -z "$ICON_SRC" ]; then ICON_SRC=$(find . -maxdepth 3 -name "icon.svg" | head -n 1); fi
+
+          if [ -n "$ICON_SRC" ] && [ -d "android/app/src/main/res" ]; then
+            echo "🎨 Custom App Icon found at: $ICON_SRC. Generating Android launcher icons..."
+            mkdir -p assets
+            cp "$ICON_SRC" assets/icon.png 2>/dev/null || true
+            cp "$ICON_SRC" assets/icon-only.png 2>/dev/null || true
+            cp "$ICON_SRC" assets/icon-foreground.png 2>/dev/null || true
+            cp "$ICON_SRC" assets/icon-background.png 2>/dev/null || true
+
+            # Always ensure ic_launcher_background XML resource exists as a fallback color
+            mkdir -p android/app/src/main/res/values
+            printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ic_launcher_background">#FFFFFF</color>\n</resources>\n' > android/app/src/main/res/values/ic_launcher_background.xml
+
+            if npx --yes @capacitor/assets generate --android 2>/dev/null; then
+              echo "✅ Generated crisp Android launcher icons with @capacitor/assets!"
+              npx cap sync android
+            else
+              echo "⚙️ @capacitor/assets bypassed, using ImageMagick/Fallback density resizing..."
+              if command -v convert >/dev/null 2>&1; then
+                convert "$ICON_SRC" -resize 48x48 android/app/src/main/res/mipmap-mdpi/ic_launcher.png 2>/dev/null || true
+                convert "$ICON_SRC" -resize 72x72 android/app/src/main/res/mipmap-hdpi/ic_launcher.png 2>/dev/null || true
+                convert "$ICON_SRC" -resize 96x96 android/app/src/main/res/mipmap-xhdpi/ic_launcher.png 2>/dev/null || true
+                convert "$ICON_SRC" -resize 144x144 android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png 2>/dev/null || true
+                convert "$ICON_SRC" -resize 192x192 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png 2>/dev/null || true
+
+                convert "$ICON_SRC" -resize 48x48 android/app/src/main/res/mipmap-mdpi/ic_launcher_round.png 2>/dev/null || true
+                convert "$ICON_SRC" -resize 72x72 android/app/src/main/res/mipmap-hdpi/ic_launcher_round.png 2>/dev/null || true
+                convert "$ICON_SRC" -resize 96x96 android/app/src/main/res/mipmap-xhdpi/ic_launcher_round.png 2>/dev/null || true
+                convert "$ICON_SRC" -resize 144x144 android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png 2>/dev/null || true
+                convert "$ICON_SRC" -resize 192x192 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png 2>/dev/null || true
+
+                convert "$ICON_SRC" -resize 108x108 android/app/src/main/res/mipmap-mdpi/ic_launcher_foreground.png 2>/dev/null || true
+                convert "$ICON_SRC" -resize 162x162 android/app/src/main/res/mipmap-hdpi/ic_launcher_foreground.png 2>/dev/null || true
+                convert "$ICON_SRC" -resize 216x216 android/app/src/main/res/mipmap-xhdpi/ic_launcher_foreground.png 2>/dev/null || true
+                convert "$ICON_SRC" -resize 324x324 android/app/src/main/res/mipmap-xxhdpi/ic_launcher_foreground.png 2>/dev/null || true
+                convert "$ICON_SRC" -resize 432x432 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png 2>/dev/null || true
+
+                convert "$ICON_SRC" -resize 108x108 android/app/src/main/res/mipmap-mdpi/ic_launcher_background.png 2>/dev/null || true
+                convert "$ICON_SRC" -resize 162x162 android/app/src/main/res/mipmap-hdpi/ic_launcher_background.png 2>/dev/null || true
+                convert "$ICON_SRC" -resize 216x216 android/app/src/main/res/mipmap-xhdpi/ic_launcher_background.png 2>/dev/null || true
+                convert "$ICON_SRC" -resize 324x324 android/app/src/main/res/mipmap-xxhdpi/ic_launcher_background.png 2>/dev/null || true
+                convert "$ICON_SRC" -resize 432x432 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_background.png 2>/dev/null || true
+                echo "✅ High-quality density-scaled icons applied with ImageMagick!"
+              else
+                for dir in android/app/src/main/res/mipmap-*; do
+                  if [ -d "$dir" ]; then
+                    cp "$ICON_SRC" "$dir/ic_launcher.png" 2>/dev/null || true
+                    cp "$ICON_SRC" "$dir/ic_launcher_round.png" 2>/dev/null || true
+                    cp "$ICON_SRC" "$dir/ic_launcher_foreground.png" 2>/dev/null || true
+                    cp "$ICON_SRC" "$dir/ic_launcher_background.png" 2>/dev/null || true
+                  fi
+                done
+                echo "⚠️ Fallback icon copy completed."
+              fi
+            fi
+          fi
+
+      - name: Build DEBUG APK
+        working-directory: app/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK as GitHub Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 60dayswithquran-debug-apk
+          path: app/android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 90
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main'
+        with:
+          tag_name: v${{ github.run_number }}
+          name: 60DaysWithQuran APK v${{ github.run_number }}
+          body: |
+            ## 📱 60DaysWithQuran v${{ github.run_number }}
+            - Automated build from commit ${{ github.sha }}
+          files: app/android/app/build/outputs/apk/debug/app-debug.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Send Email Notification via Resend
+        if: always()
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          JOB_STATUS: ${{ job.status }}
+          RUN_NUMBER: ${{ github.run_number }}
+          COMMIT_SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$RESEND_API_KEY" ]; then
+            echo "ℹ️ RESEND_API_KEY secret not set, skipping email notification"
+            exit 0
+          fi
+          node -e '
+            const https = require("https");
+            const key = process.env.RESEND_API_KEY || "";
+            if (!key) process.exit(0);
+            const status = process.env.JOB_STATUS || "unknown";
+            const icon = status === "success" ? "✅" : status === "failure" ? "❌" : "⚠️";
+            const color = status === "success" ? "#22c55e" : status === "failure" ? "#ef4444" : "#f59e0b";
+            const app = "60DaysWithQuran";
+            const runNum = process.env.RUN_NUMBER || "";
+            const commit = (process.env.COMMIT_SHA || "").slice(0, 7);
+            const repo = process.env.REPO || "";
+            const rawRecs = "";
+            let recs = rawRecs.split(",").map(r => r.trim()).filter(Boolean);
+            if (recs.length === 0) recs = ["build@alkareem.co"];
+            const body = `<html><body style="font-family:sans-serif;max-width:600px;margin:0 auto;padding:20px;"><div style="background:#0f172a;color:white;padding:20px;border-radius:10px;text-align:center;"><h2 style="margin:0;">${app}</h2><p style="color:#94a3b8;margin:5px 0 0;">GitHub Actions Build Notification</p></div><div style="background:#f8fafc;border:1px solid #e2e8f0;padding:16px;border-radius:8px;margin-top:16px;"><p><strong>Status:</strong> <span style="color:${color};font-weight:bold;">${icon} ${status.toUpperCase()}</span></p><p><strong>Run Number:</strong> #${runNum}</p><p><strong>Commit:</strong> <code>${commit}</code></p><p><strong>Repository:</strong> ${repo}</p></div></body></html>`;
+            const payload = JSON.stringify({
+              from: "build@alkareem.co",
+              to: recs,
+              subject: `${icon} [${status.toUpperCase()}] ${app} v${runNum}`,
+              html: body
+            });
+            const req = https.request("https://api.resend.com/emails", {
+              method: "POST",
+              headers: {
+                "Authorization": "Bearer " + key,
+                "Content-Type": "application/json",
+                "Content-Length": Buffer.byteLength(payload)
+              }
+            }, res => { console.log("✅ Resend response status:", res.statusCode); });
+            req.on("error", e => console.error("⚠️ Resend error:", e.message));
+            req.write(payload);
+            req.end();
+          ' || echo "⚠️ Resend email non-fatal notice"
